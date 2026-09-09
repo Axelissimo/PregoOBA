@@ -14,6 +14,10 @@ export type ImportedRow = {
 
 const SKU_RE = /^(P|PB|PA|PS|PM|PE|LA|S)\w+/i;
 
+function normalizeSku(raw: string): string {
+  return raw.trim().replace(/\s+/g, "").toUpperCase();
+}
+
 function decodeEntities(s: string): string {
   return s
     .replace(/&/g, "&")
@@ -47,7 +51,7 @@ function parseXml(text: string): ImportedRow[] {
   for (const chunk of chunks) {
     const cells = cellText(chunk);
     if (cells.length < 8) continue;
-    const sku = (cells[0] || "").trim();
+    const sku = normalizeSku(cells[0] || "");
     if (!SKU_RE.test(sku) && !/^[A-Z]{1,4}\d/i.test(sku)) continue;
     if (sku.toLowerCase() === "tuote") continue;
     if (seen.has(sku)) continue;
@@ -111,7 +115,7 @@ function parseCsv(text: string): ImportedRow[] {
   const seen = new Set<string>();
   for (const line of lines.slice(1)) {
     const c = split(line);
-    const sku = (c[iSku] || "").trim();
+    const sku = normalizeSku(c[iSku] || "");
     if (!sku || seen.has(sku)) continue;
     seen.add(sku);
     rows.push({

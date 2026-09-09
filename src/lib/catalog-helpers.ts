@@ -84,12 +84,23 @@ export function hasProductPhoto(p: Product): boolean {
   return Boolean(p.imageUrl);
 }
 
+export function skuHasDatasheet(sku: string): boolean {
+  return Boolean((datasheetFilenames as Record<string, string>)[sku]);
+}
+
+export function resolvedDatasheetUrl(sku: string, stored: string | null): string | null {
+  if (stored) return stored;
+  if (skuHasDatasheet(sku)) return `/datasheets/${sku}.pdf`;
+  return null;
+}
+
 export function datasheetDownloadName(p: Product): string {
   const original = (datasheetFilenames as Record<string, string>)[p.sku];
   if (original) return original;
   const safe = p.nameFi.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
   return `Prego ${safe} ${p.sku}.pdf`;
 }
+
 
 /** Customer catalog: in stock, or out of stock with a dated Excel ETA (must include a year). */
 export function isCustomerVisible(p: { stock: number; eta: string | null; active?: boolean }): boolean {
@@ -132,7 +143,7 @@ export function mapProductRow(row: Record<string, unknown>): Product {
     eta: row.eta == null || row.eta === "" ? null : String(row.eta),
     active: Boolean(row.active),
     imageUrl: strOrNull(row.image_url),
-    datasheetUrl: strOrNull(row.datasheet_url),
+    datasheetUrl: resolvedDatasheetUrl(String(row.sku ?? ""), strOrNull(row.datasheet_url)),
     featuresFi: parseFeatures(row.features_fi),
     featuresEn: parseFeatures(row.features_en),
     featuresSv: parseFeatures(row.features_sv),

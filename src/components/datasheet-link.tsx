@@ -1,5 +1,6 @@
 import { FileText } from "lucide-react";
-import { datasheetDownloadName } from "@/lib/catalog-helpers";
+import { toast } from "sonner";
+import { datasheetDownloadName, skuHasDatasheet } from "@/lib/catalog-helpers";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { useMyProfile } from "@/lib/auth/use-profile";
@@ -7,9 +8,7 @@ import { Link } from "@tanstack/react-router";
 import type { Product } from "@/lib/types";
 
 function datasheetHref(product: Product): string {
-  const url = product.datasheetUrl || "";
-  const base = url.split("/").pop() || `${product.sku}.pdf`;
-  return `/api/datasheets/${encodeURIComponent(base)}`;
+  return `/api/datasheets/${encodeURIComponent(product.sku)}`;
 }
 
 export function DatasheetLink({
@@ -23,7 +22,7 @@ export function DatasheetLink({
 }) {
   const { t } = useI18n();
   const { isApproved, isAwaiting } = useMyProfile();
-  if (!product.datasheetUrl) return null;
+  if (!product.datasheetUrl && !skuHasDatasheet(product.sku)) return null;
   if (!isApproved) {
     return (
       <Link
@@ -42,6 +41,36 @@ export function DatasheetLink({
     );
   }
   const filename = datasheetDownloadName(product);
+  async function onDownload(event: React.MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    try {
+      const res = await fetch(datasheetHref(product), { credentials: "include" });
+      const type = res.headers.get("content-type") || "";
+      if (res.redirected && /\/(login|pending)/.test(res.url)) {
+        window.location.href = res.url;
+        return;
+      }
+      if (!res.ok || type.includes("text/html")) {
+        toast.error(t("product.datasheetFail"));
+        return;
+      }
+      const blob = await res.blob();
+      if (blob.size < 80) {
+        toast.error(t("product.datasheetFail"));
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      toast.error(t("product.datasheetFail"));
+    }
+  }
   return (
     <a
       href={datasheetHref(product)}
@@ -49,6 +78,7 @@ export function DatasheetLink({
       type="application/pdf"
       title={filename}
       aria-label={t("product.datasheet")}
+      onClick={onDownload}
       className={cn(
         "inline-flex cursor-pointer items-center justify-center gap-2 border border-line bg-surface font-medium text-ink hover:bg-paper",
         compact ? "size-9 rounded-md" : "h-11 rounded-lg px-4 text-sm",

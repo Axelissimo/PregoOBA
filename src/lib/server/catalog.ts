@@ -5,22 +5,9 @@ import { mapProductRow, guessGroup, featuresJson, GROUPS } from "@/lib/catalog-h
 import { parseInventoryFile, splitCategory } from "@/lib/excel-parse";
 import type { Product } from "@/lib/types";
 import seed from "@/data/products.json";
+import datasheetFilenames from "@/data/datasheet-filenames.json";
 
 type SeedItem = Product;
-
-const DATASHEET_SYNC_SKUS = new Set([
-  "PM021E",
-  "P351B",
-  "PB7072",
-  "PB7059",
-  "P951",
-  "P945",
-  "PM023",
-  "P6208",
-  "P124",
-  "P227",
-  "P8426D",
-]);
 
 function emptyish(value: unknown): boolean {
   if (value == null) return true;
@@ -47,8 +34,7 @@ async function insertSeedProduct(sql: Sql, p: SeedItem) {
   `;
 }
 
-async function seedIfEmpty() {
-  const sql = await getSql();
+async function restoreCatalogMedia(sql: Sql) {
   const items = seed as SeedItem[];
   const existing = await sql<{
     sku: string;
@@ -60,14 +46,10 @@ async function seedIfEmpty() {
 
   for (const p of items) {
     const row = bySku.get(p.sku);
-    if (!row) {
-      await insertSeedProduct(sql, p);
-      continue;
-    }
-    const force = DATASHEET_SYNC_SKUS.has(p.sku);
-    const needImage = force || (emptyish(row.image_url) && Boolean(p.imageUrl));
-    const needSheet = force || (emptyish(row.datasheet_url) && Boolean(p.datasheetUrl));
-    const needFeat = force || (emptyish(row.features_fi) && (p.featuresFi?.length ?? 0) > 0);
+    if (!row) continue;
+    const needImage = emptyish(row.image_url) && Boolean(p.imageUrl);
+    const needSheet = emptyish(row.datasheet_url) && Boolean(p.datasheetUrl);
+    const needFeat = emptyish(row.features_fi) && (p.featuresFi?.length ?? 0) > 0;
     if (!needImage && !needSheet && !needFeat) continue;
     await sql`
       update products set
@@ -77,19 +59,32 @@ async function seedIfEmpty() {
         features_en = case when ${needFeat} then ${featuresJson(p.featuresEn)} else features_en end,
         features_sv = case when ${needFeat} then ${featuresJson(p.featuresSv)} else features_sv end,
         features_no = case when ${needFeat} then ${featuresJson(p.featuresNo)} else features_no end,
-        features_et = case when ${needFeat} then ${featuresJson(p.featuresEt)} else features_et end,
-        name_fi = case when ${needFeat} then ${p.nameFi} else name_fi end,
-        name_en = case when ${needFeat} then ${p.nameEn} else name_en end,
-        name_sv = case when ${needFeat} then ${p.nameSv} else name_sv end,
-        name_no = case when ${needFeat} then ${p.nameNo} else name_no end,
-        name_et = case when ${needFeat} then ${p.nameEt} else name_et end,
-        ean = case when ${force} then ${p.ean} else ean end,
-        net_price = case when ${force} then ${p.netPrice} else net_price end,
-        carton_qty = case when ${force} then ${p.cartonQty} else carton_qty end,
-        eta = case when ${force} then ${p.eta} else eta end
+        features_et = case when ${needFeat} then ${featuresJson(p.featuresEt)} else features_et end
       where sku = ${p.sku}
     `;
   }
+
+  const known = Object.keys(datasheetFilenames as Record<string, string>);
+  if (known.length > 0) {
+    await sql.query(
+      `update products
+       set datasheet_url = '/datasheets/' || sku || '.pdf'
+       where (datasheet_url is null or btrim(datasheet_url) = '')
+         and sku = any($1::text[])`,
+      [known],
+    );
+  }
+}
+
+async function seedIfEmpty() {
+  const sql = await getSql();
+  const items = seed as SeedItem[];
+  const existing = await sql<{ sku: string }>`select sku from products`;
+  const have = new Set(existing.map((r) => r.sku));
+  for (const p of items) {
+    if (!have.has(p.sku)) await insertSeedProduct(sql, p);
+  }
+  await restoreCatalogMedia(sql);
   await sql`update products set name_fi = replace(name_fi, 'HiusTENS', 'Hiusten') where name_fi like ${"%HiusTENS%"}`;
   const validGroups = new Set<string>(GROUPS.map((g) => g.id));
   const all = await sql<{ sku: string; category_code: string; product_group: string }>`
@@ -275,7 +270,7 @@ export const importInventory = createServerFn({ method: "POST" })
       const group = guessGroup(cat.code);
       const existing = await sql<Existing>`
         select sku, name_fi, net_price::text, carton_qty, stock, incoming, reserved, backorder, eta, active
-        from products where sku = ${r.sku}
+        from products where upper(sku) = ${r.sku}
       `;
       if (existing.length === 0) {
         added += 1;
@@ -283,16 +278,21 @@ export const importInventory = createServerFn({ method: "POST" })
         if (addedDetails.length < 800) {
           addedDetails.push({ sku: r.sku, name, stock: r.stock, price: r.netPrice });
         }
+        const sheetUrl = (datasheetFilenames as Record<string, string>)[r.sku]
+          ? `/datasheets/${r.sku}.pdf`
+          : null;
         await sql`
           insert into products (
             sku, ean, name_fi, name_en, name_sv, name_no, name_et,
             category_code, category_fi, category_en, category_sv, category_no, category_et,
-            product_group, net_price, carton_qty, stock, incoming, reserved, backorder, eta, active, updated_at
+            product_group, net_price, carton_qty, stock, incoming, reserved, backorder, eta, active, updated_at,
+            datasheet_url
           ) values (
             ${r.sku}, ${r.ean}, ${name}, ${name}, ${name}, ${name}, ${name},
             ${cat.code}, ${cat.fi}, ${cat.fi}, ${cat.fi}, ${cat.fi}, ${cat.fi},
             ${group}, ${r.netPrice}, ${r.cartonQty}, ${r.stock}, ${r.incoming}, ${r.reserved}, ${r.backorder},
-            ${r.eta}, true, now()
+            ${r.eta}, true, now(),
+            ${sheetUrl}
           )
         `;
       } else {
@@ -328,7 +328,7 @@ export const importInventory = createServerFn({ method: "POST" })
             eta = ${r.eta},
             active = true,
             updated_at = now()
-          where sku = ${r.sku}
+          where upper(sku) = ${r.sku}
         `;
       }
     }
@@ -358,6 +358,7 @@ export const importInventory = createServerFn({ method: "POST" })
         ${deactivatedDetails.length}, ${changedDetails.length}, ${data.deactivateMissing}, ${details}
       )
     `;
+    await restoreCatalogMedia(sql);
     return { updated, added, changed: changedDetails.length, deactivated: deactivatedDetails.length, total: rows.length };
   });
 

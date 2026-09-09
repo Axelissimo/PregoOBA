@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { serveDatasheet } from "@/lib/server/datasheet-file";
 
 export const Route = createFileRoute("/api/datasheets/$file")({
   component: () => null,
@@ -7,10 +6,11 @@ export const Route = createFileRoute("/api/datasheets/$file")({
     handlers: {
       GET: async ({ request, params }) => {
         try {
+          const { serveDatasheet } = await import("@/lib/server/datasheet-file");
           return await serveDatasheet(request, params.file);
         } catch (err) {
           console.error("[datasheet]", err);
-          return new Response("Datasheet unavailable", { status: 500 });
+          return new Response("Tuotekorttia ei voitu ladata", { status: 500 });
         }
       },
     },
