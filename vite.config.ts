@@ -1,4 +1,4 @@
-import { readdirSync, cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { readdirSync, cpSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
@@ -28,24 +28,6 @@ function copyDatasheetsInto(serverDir: string) {
   mkdirSync(dest, { recursive: true });
   cpSync(src, dest, { recursive: true });
   console.log("[datasheets] copied", src, "->", dest);
-}
-
-/** Inline private datasheet PDFs so the Vercel function can serve them. */
-function datasheetBytesPlugin(): Plugin {
-  return {
-    name: "prego-datasheet-bytes",
-    enforce: "pre",
-    load(id) {
-      const clean = id.split("?")[0]?.replace(/\\/g, "/") ?? "";
-      if (!clean.endsWith(".pdf") || !clean.includes("/private/datasheets/")) return null;
-      const b64 = readFileSync(clean).toString("base64");
-      return `const bin = atob(${JSON.stringify(b64)});
-const out = new Uint8Array(bin.length);
-for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-export default out;
-`;
-    },
-  };
 }
 
 /**
@@ -192,7 +174,6 @@ export default defineConfig(({ command, isPreview }) => ({
     appEnvPlugin(),
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
     grokPwaPlugin(),
-    datasheetBytesPlugin(),
     tailwindcss(),
     tanstackStart(),
     ...(command === "build" || isPreview

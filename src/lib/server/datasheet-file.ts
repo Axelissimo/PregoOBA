@@ -9,11 +9,6 @@ import datasheetFilenames from "@/data/datasheet-filenames.json";
 const SAFE = /^[A-Za-z0-9._-]{1,80}$/;
 const NAMES = datasheetFilenames as Record<string, string>;
 
-const bundled = import.meta.glob("../../../private/datasheets/*.pdf") as Record<
-  string,
-  () => Promise<{ default: Uint8Array | ArrayBuffer | { default?: Uint8Array } }>
->;
-
 function fileName(raw: string): string | null {
   const base = decodeURIComponent(raw || "").split("/").pop() || "";
   const trimmed = base.trim();
@@ -36,20 +31,6 @@ function contentDisposition(filename: string): string {
   const ascii = filename.replace(/[^\x20-\x7E]/g, "_") || "datasheet.pdf";
   const encoded = encodeURIComponent(filename).replace(/['()]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
-}
-
-function toBuffer(data: unknown): Buffer | null {
-  if (data == null) return null;
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof Uint8Array) return Buffer.from(data);
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (ArrayBuffer.isView(data)) {
-    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  }
-  if (typeof data === "object" && data && "default" in data) {
-    return toBuffer((data as { default: unknown }).default);
-  }
-  return null;
 }
 
 function moduleDir(): string {
@@ -92,20 +73,6 @@ async function readFromDisk(name: string): Promise<Buffer | null> {
   return null;
 }
 
-async function readFromBundle(name: string): Promise<Buffer | null> {
-  const sku = skuFromName(name);
-  const needle = `/${sku}.pdf`.toLowerCase();
-  const key = Object.keys(bundled).find((k) => k.replace(/\\/g, "/").toLowerCase().endsWith(needle));
-  if (!key) return null;
-  try {
-    const mod = await bundled[key]();
-    return toBuffer(mod) || toBuffer(mod?.default);
-  } catch (err) {
-    console.error("[datasheet] bundle", key, err);
-    return null;
-  }
-}
-
 async function readFromPublicUrl(request: Request, name: string): Promise<Buffer | null> {
   try {
     const url = new URL(`/datasheets/${encodeURIComponent(name)}`, request.url);
@@ -123,11 +90,7 @@ async function readFromPublicUrl(request: Request, name: string): Promise<Buffer
 }
 
 async function readPdf(name: string, request: Request): Promise<Buffer | null> {
-  return (
-    (await readFromDisk(name)) ||
-    (await readFromBundle(name)) ||
-    (await readFromPublicUrl(request, name))
-  );
+  return (await readFromDisk(name)) || (await readFromPublicUrl(request, name));
 }
 
 export async function serveDatasheet(request: Request, rawName: string): Promise<Response> {
