@@ -1,4 +1,4 @@
-import { readdirSync, cpSync, existsSync, mkdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
@@ -19,15 +19,6 @@ function hasGlobbedMigrations(root: string): boolean {
   } catch {
     return false;
   }
-}
-
-function copyDatasheetsInto(serverDir: string) {
-  const src = join(process.cwd(), "private", "datasheets");
-  if (!existsSync(src) || !serverDir) return;
-  const dest = join(serverDir, "datasheets");
-  mkdirSync(dest, { recursive: true });
-  cpSync(src, dest, { recursive: true });
-  console.log("[datasheets] copied", src, "->", dest);
 }
 
 /**
@@ -181,21 +172,6 @@ export default defineConfig(({ command, isPreview }) => ({
           nitro({
             preset: "vercel",
             serverDir: "./server",
-            serverAssets: [{ baseName: "datasheets", dir: "./private/datasheets" }],
-            hooks: {
-              compiled(nitro) {
-                const serverDir = (nitro as { options?: { output?: { serverDir?: string } } }).options
-                  ?.output?.serverDir;
-                if (serverDir) copyDatasheetsInto(serverDir);
-                copyDatasheetsInto(join(process.cwd(), ".output", "server"));
-                const vercelFns = join(process.cwd(), ".vercel", "output", "functions");
-                if (existsSync(vercelFns)) {
-                  for (const name of readdirSync(vercelFns)) {
-                    copyDatasheetsInto(join(vercelFns, name));
-                  }
-                }
-              },
-            },
           }),
         ]
       : []),
