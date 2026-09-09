@@ -75,6 +75,7 @@ export async function sendSignupNotice(input: {
   companyName: string;
   vatNumber: string;
   phone: string;
+  language?: string;
 }): Promise<{ ok: boolean; error: string }> {
   const errors: string[] = [];
   const adminBody = [
@@ -85,6 +86,7 @@ export async function sendSignupNotice(input: {
     "Yhteyshenkil\u00f6: " + (input.displayName || "-"),
     "S\u00e4hk\u00f6posti: " + (input.applicantEmail || "-"),
     "Puhelin: " + (input.phone || "-"),
+    "Kieli: " + (input.language || "fi"),
     "",
     "Hyv\u00e4ksy asiakas: https://prego.585.fi/admin",
   ].join("\n");
@@ -95,22 +97,186 @@ export async function sendSignupNotice(input: {
   });
   if (!admin.ok) errors.push("myynti: " + admin.error);
   if (input.applicantEmail.includes("@")) {
-    const userBody = [
-      "Hei " + (input.displayName || "") + ",",
-      "",
-      "Kiitos Prego B2B -tilin avaamisesta.",
-      "Yll\u00e4pit\u00e4j\u00e4 tarkistaa yrityksen tiedot. Hinnat ja tilaus avautuvat, kun tili on hyv\u00e4ksytty.",
-      "",
-      "Prego / Suomen 585 Oy",
-    ].join("\n");
+    const copy = pendingCopy(input.language || "fi", input.displayName);
     const user = await sendResendEmail({
       to: input.applicantEmail,
-      subject: "Prego B2B: tilisi odottaa hyv\u00e4ksynt\u00e4\u00e4",
-      text: userBody,
+      subject: copy.subject,
+      text: copy.text,
     });
     if (!user.ok) errors.push("hakija: " + user.error);
   }
   return { ok: admin.ok, error: errors.join(" | ") };
+}
+
+function pendingCopy(raw: string, name: string): { subject: string; text: string } {
+  const lang = (raw || "fi").toLowerCase().slice(0, 2);
+  const who = (name || "").trim();
+  const phone = "Olavi Barman, p. 0400 777 508";
+  if (lang === "en") {
+    return {
+      subject: "Prego B2B: your account is awaiting approval",
+      text: [
+        "Hello " + (who || "there") + ",",
+        "",
+        "Thank you for opening a Prego B2B account.",
+        "An administrator will review the company details. Prices and ordering open once the account is approved.",
+        "",
+        "If you are in a hurry, please call " + phone + ".",
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  if (lang === "sv") {
+    return {
+      subject: "Prego B2B: ditt konto väntar på godkännande",
+      text: [
+        "Hej " + who + ",",
+        "",
+        "Tack för att du öppnade ett Prego B2B-konto.",
+        "En administratör granskar företagsuppgifterna. Priser och beställning öppnas när kontot är godkänt.",
+        "",
+        "Om det är bråttom, ring " + phone + ".",
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  if (lang === "no" || lang === "nb" || lang === "nn") {
+    return {
+      subject: "Prego B2B: kontoen din venter på godkjenning",
+      text: [
+        "Hei " + who + ",",
+        "",
+        "Takk for at du åpnet en Prego B2B-konto.",
+        "En administrator sjekker firmadetaljene. Priser og bestilling åpnes når kontoen er godkjent.",
+        "",
+        "Hvis det haster, ring " + phone + ".",
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  if (lang === "et") {
+    return {
+      subject: "Prego B2B: teie konto ootab kinnitust",
+      text: [
+        "Tere" + (who ? " " + who : "") + ",",
+        "",
+        "Täname Prego B2B konto avamise eest.",
+        "Haldur kontrollib ettevõtte andmed. Hinnad ja tellimine avanevad pärast konto kinnitamist.",
+        "",
+        "Kui teil on kiire, helistage " + phone + ".",
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  return {
+    subject: "Prego B2B: tilisi odottaa hyväksyntää",
+    text: [
+      "Hei " + who + ",",
+      "",
+      "Kiitos Prego B2B -tilin avaamisesta.",
+      "Ylläpitäjä tarkistaa yrityksen tiedot. Hinnat ja tilaus avautuvat, kun tili on hyväksytty.",
+      "",
+      "Jos sinulla on kiire, soita " + phone + ".",
+      "",
+      "Prego / Suomen 585 Oy",
+    ].join("\n"),
+  };
+}
+
+export async function sendAccountApprovedMail(input: {
+  to: string;
+  displayName: string;
+  language: string;
+}): Promise<{ ok: boolean; error: string }> {
+  const copy = approvalCopy(input.language, input.displayName);
+  return sendResendEmail({
+    to: input.to,
+    subject: copy.subject,
+    text: copy.text,
+  });
+}
+
+function approvalCopy(raw: string, name: string): { subject: string; text: string } {
+  const lang = (raw || "fi").toLowerCase().slice(0, 2);
+  const who = (name || "").trim();
+  const login = "https://prego.585.fi/login";
+  if (lang === "en") {
+    return {
+      subject: "Prego B2B: your account has been approved",
+      text: [
+        "Hello " + (who || "there") + ",",
+        "",
+        "Your company account on the Prego B2B portal has been approved.",
+        "You can now sign in, see net prices and place orders.",
+        "",
+        "Sign in: " + login,
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  if (lang === "sv") {
+    return {
+      subject: "Prego B2B: ditt konto har godkänts",
+      text: [
+        "Hej " + who + ",",
+        "",
+        "Ditt företagskonto i Prego B2B-portalen har godkänts.",
+        "Du kan nu logga in, se nettopriser och lägga order.",
+        "",
+        "Logga in: " + login,
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  if (lang === "no" || lang === "nb" || lang === "nn") {
+    return {
+      subject: "Prego B2B: kontoen din er godkjent",
+      text: [
+        "Hei " + who + ",",
+        "",
+        "Bedriftskontoen din i Prego B2B-portalen er godkjent.",
+        "Du kan nå logge inn, se nettopriser og legge inn ordre.",
+        "",
+        "Logg inn: " + login,
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  if (lang === "et") {
+    return {
+      subject: "Prego B2B: teie konto on kinnitatud",
+      text: [
+        "Tere" + (who ? " " + who : "") + ",",
+        "",
+        "Teie ettevõtte konto Prego B2B portaalis on kinnitatud.",
+        "Nüüd saate sisse logida, näha netohindu ja esitada tellimusi.",
+        "",
+        "Logi sisse: " + login,
+        "",
+        "Prego / Suomen 585 Oy",
+      ].join("\n"),
+    };
+  }
+  return {
+    subject: "Prego B2B: tilisi on hyväksytty",
+    text: [
+      "Hei " + who + ",",
+      "",
+      "Yritystilisi Prego B2B -portaalissa on hyväksytty.",
+      "Voit nyt kirjautua, nähdä nettohinnat ja tehdä tilauksia.",
+      "",
+      "Kirjaudu: " + login,
+      "",
+      "Prego / Suomen 585 Oy",
+    ].join("\n"),
+  };
 }
 
 export async function sendPasswordResetMail(email: string, url: string) {

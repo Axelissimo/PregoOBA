@@ -650,9 +650,19 @@ function CustomersAdmin({ currentUserId }: { currentUserId: string }) {
                       className="h-9 rounded-md border border-line bg-surface px-2 text-sm"
                       value={c.role}
                       onChange={(e) => {
-                        void setCustomerRole({
-                          data: { userId: c.userId, role: e.target.value as Profile["role"] },
-                        }).then(() => qc.invalidateQueries({ queryKey: ["admin-customers"] }));
+                        const role = e.target.value as Profile["role"];
+                        void setCustomerRole({ data: { userId: c.userId, role } })
+                          .then((res) => {
+                            qc.invalidateQueries({ queryKey: ["admin-customers"] });
+                            if (c.role === "pending" && role !== "pending") {
+                              toast.message(
+                                res.mailed
+                                  ? t("admin.approvedMail")
+                                  : t("admin.approvedMailFail") + (res.mailError ? " " + res.mailError : ""),
+                              );
+                            }
+                          })
+                          .catch((err) => toast.message(err instanceof Error ? err.message : t("auth.error")));
                       }}
                     >
                       <option value="pending">{t("admin.role.pending")}</option>
@@ -664,9 +674,16 @@ function CustomersAdmin({ currentUserId }: { currentUserId: string }) {
                         type="button"
                         className="h-9 rounded-md bg-ink px-3 text-xs font-medium text-paper"
                         onClick={() => {
-                          void setCustomerRole({
-                            data: { userId: c.userId, role: "customer" },
-                          }).then(() => qc.invalidateQueries({ queryKey: ["admin-customers"] }));
+                          void setCustomerRole({ data: { userId: c.userId, role: "customer" } })
+                            .then((res) => {
+                              qc.invalidateQueries({ queryKey: ["admin-customers"] });
+                              toast.message(
+                                res.mailed
+                                  ? t("admin.approvedMail")
+                                  : t("admin.approvedMailFail") + (res.mailError ? " " + res.mailError : ""),
+                              );
+                            })
+                            .catch((err) => toast.message(err instanceof Error ? err.message : t("auth.error")));
                         }}
                       >
                         {t("admin.approve")}

@@ -4,7 +4,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { mapProductRow } from "@/lib/catalog-helpers";
 import type { Order, OrderItem, Profile } from "@/lib/types";
 import { MIN_ORDER_NET, meetsMinOrder } from "@/lib/commerce-rules";
-import { sendSignupNotice, sendResendEmail, textToHtml } from "@/lib/server/mail";
+import { sendSignupNotice, sendResendEmail, textToHtml, sendAccountApprovedMail } from "@/lib/server/mail";
 
 function mapProfile(row: Record<string, unknown>): Profile {
   return {
@@ -121,13 +121,25 @@ export const setCustomerRole = createServerFn({ method: "POST" })
       throw new Error("Cannot demote yourself");
     }
     const sql = await getSql();
+    const prev = await sql<{ role: string; email: string; display_name: string; language: string }>`
+      select role, email, display_name, language from profiles where user_id = ${data.userId} limit 1
+    `;
     await sql`
       update profiles set
         role = ${data.role},
         approved_at = case when ${data.role} = 'pending' then null else coalesce(approved_at, now()) end
       where user_id = ${data.userId}
     `;
-    return { ok: true };
+    const becameApproved = prev[0]?.role === "pending" && data.role !== "pending";
+    if (becameApproved && prev[0]?.email) {
+      const mailed = await sendAccountApprovedMail({
+        to: prev[0].email,
+        displayName: prev[0].display_name || "",
+        language: prev[0].language || "fi",
+      });
+      return { ok: true, mailed: mailed.ok, mailError: mailed.error };
+    }
+    return { ok: true, mailed: false, mailError: "" };
   });
 
 export const deleteCustomer = createServerFn({ method: "POST" })
@@ -599,6 +611,7 @@ export const completeRegistration = createServerFn({ method: "POST" })
       companyName: data.companyName || profile.companyName,
       vatNumber: data.vatNumber || profile.vatNumber,
       phone: data.phone || profile.phone,
+      language: data.language || profile.language || "fi",
     };
     const sent = await sendSignupNotice(payload);
     await logEmail(sql, {
