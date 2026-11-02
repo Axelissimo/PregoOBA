@@ -43,6 +43,7 @@ export function OrderList({
                   <span className="block truncate text-xs text-muted">
                     {o.createdAt.slice(0, 10)}
                     {admin && o.companyName ? ` · ${o.companyName}` : ""}
+                    {o.onBehalf ? ` · ${t("order.onBehalf")}` : ""}
                     {" · "}
                     {t(`orders.status.${o.status}`)}
                     {" · "}
@@ -95,6 +96,14 @@ export function OrderList({
                 {o.poNumber ? (
                   <p className="mt-1 text-xs text-muted">
                     {t("checkout.po")}: {o.poNumber}
+                  </p>
+                ) : null}
+                {o.onBehalf ? (
+                  <p className="mt-2 text-sm font-medium text-accent">
+                    {t("order.onBehalf")}
+                    {o.placedByName || o.placedByEmail
+                      ? ` — ${[o.placedByName, o.placedByEmail].filter(Boolean).join(" · ")}`
+                      : ""}
                   </p>
                 ) : null}
                 {o.notes ? <p className="mt-2 whitespace-pre-wrap text-sm">{o.notes}</p> : null}

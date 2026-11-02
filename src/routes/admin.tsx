@@ -25,6 +25,7 @@ import {
   setOrderStatus,
   getSettings,
   sendTestEmail,
+  submitOrder,
 } from "@/lib/server/commerce";
 import { GROUPS } from "@/lib/catalog-helpers";
 import { formatEur } from "@/lib/utils";
@@ -534,22 +535,33 @@ function ImportAdmin() {
   const { t } = useI18n();
   const qc = useQueryClient();
   const logs = useQuery({ queryKey: ["import-logs"], queryFn: () => listImportLogs() });
-  const [deactivate, setDeactivate] = useState(false);
+  const [deactivate, setDeactivate] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [over, setOver] = useState(false);
 
   async function onFile(file: File) {
     setBusy(true);
     try {
-      const text = await file.text();
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
       const res = await importInventory({
-        data: { filename: file.name, text, deactivateMissing: deactivate },
+        data: { filename: file.name, base64: btoa(binary), deactivateMissing: deactivate },
       });
       toast.message(t("admin.imported", { u: res.updated, a: res.added }));
       void qc.invalidateQueries({ queryKey: ["admin-products"] });
       void qc.invalidateQueries({ queryKey: ["products"] });
       void qc.invalidateQueries({ queryKey: ["import-logs"] });
     } catch (err) {
-      toast.message(err instanceof Error ? err.message : t("auth.error"));
+      const msg =
+        err instanceof Error
+          ? err.message
+          : err && typeof err === "object" && "message" in err
+            ? String((err as { message: unknown }).message)
+            : t("auth.error");
+      toast.message(msg);
     } finally {
       setBusy(false);
     }
@@ -561,14 +573,28 @@ function ImportAdmin() {
       <a href="/prego-stock-template.xls" className="mt-3 inline-block text-sm underline" download>
         {t("admin.template")}
       </a>
-      <label className="mt-6 flex min-h-40 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-line bg-surface px-4 text-sm text-muted">
+      <label
+        className={`mt-6 flex min-h-40 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed px-4 text-sm ${over ? "border-ink bg-paper text-ink" : "border-line bg-surface text-muted"}`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setOver(true);
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setOver(false);
+          const f = e.dataTransfer.files?.[0];
+          if (f) void onFile(f);
+        }}
+      >
         {busy ? t("common.loading") : t("admin.drop")}
         <input
           type="file"
-          accept=".xls,.xlsx,.csv,.xml,text/xml,application/xml,text/csv"
+          accept=".xls,.xlsx,.csv,.xml,text/xml,application/xml,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
+            e.target.value = "";
             if (f) void onFile(f);
           }}
         />
@@ -582,6 +608,159 @@ function ImportAdmin() {
   );
 }
 
+function BehalfOrder() {
+  const { t } = useI18n();
+  const qc = useQueryClient();
+  const customers = useQuery({ queryKey: ["admin-customers"], queryFn: () => listCustomers() });
+  const products = useQuery({ queryKey: ["admin-products"], queryFn: () => adminListProducts() });
+  const approved = (customers.data ?? []).filter((c) => c.role === "customer" || c.role === "admin");
+  const [userId, setUserId] = useState("");
+  const [lines, setLines] = useState<{ sku: string; qty: string }[]>([{ sku: "", qty: "1" }]);
+  const [po, setPo] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [ship, setShip] = useState({
+    deliveryName: "",
+    deliveryAddress: "",
+    deliveryPostal: "",
+    deliveryCity: "",
+    deliveryCountry: "FI",
+  });
+
+  function pickCustomer(id: string) {
+    setUserId(id);
+    const c = approved.find((x) => x.userId === id);
+    if (!c) return;
+    setShip({
+      deliveryName: c.displayName || c.companyName,
+      deliveryAddress: c.addressLine,
+      deliveryPostal: c.postalCode,
+      deliveryCity: c.city,
+      deliveryCountry: c.country || "FI",
+    });
+  }
+
+  async function send() {
+    const clean = lines
+      .map((l) => ({ sku: l.sku.trim().toUpperCase(), qty: Math.round(Number(l.qty)) }))
+      .filter((l) => l.sku && l.qty > 0);
+    if (!userId || !clean.length) {
+      toast.message(t("auth.error"));
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await submitOrder({
+        data: {
+          onBehalfUserId: userId,
+          lines: clean,
+          poNumber: po,
+          notes,
+          reverseCharge: false,
+          ...ship,
+        },
+      });
+      toast.message(t("admin.behalfDone", { n: res.orderNo }));
+      setLines([{ sku: "", qty: "1" }]);
+      setPo("");
+      setNotes("");
+      void qc.invalidateQueries({ queryKey: ["admin-orders"] });
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : err && typeof err === "object" && "message" in err
+            ? String((err as { message: unknown }).message)
+            : t("auth.error");
+      toast.message(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const known = new Map((products.data ?? []).map((p) => [p.sku.toUpperCase(), p]));
+
+  return (
+    <div className="mb-8 rounded-xl border border-line bg-surface p-4">
+      <h2 className="text-lg font-medium">{t("admin.behalfTitle")}</h2>
+      <p className="mt-1 max-w-2xl text-sm text-muted">{t("admin.behalfLead")}</p>
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <Field label={t("admin.behalfCustomer")}>
+          <select
+            className="h-11 w-full rounded-lg border border-line bg-paper px-3 text-sm"
+            value={userId}
+            onChange={(e) => pickCustomer(e.target.value)}
+          >
+            <option value="">—</option>
+            {approved.map((c) => (
+              <option key={c.userId} value={c.userId}>
+                {(c.companyName || c.displayName || c.email) + " · " + c.email}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label={t("checkout.po")}>
+          <Input value={po} onChange={(e) => setPo(e.target.value)} />
+        </Field>
+        <Field label={t("account.name")}>
+          <Input value={ship.deliveryName} onChange={(e) => setShip((s) => ({ ...s, deliveryName: e.target.value }))} />
+        </Field>
+        <Field label={t("account.address")}>
+          <Input value={ship.deliveryAddress} onChange={(e) => setShip((s) => ({ ...s, deliveryAddress: e.target.value }))} />
+        </Field>
+        <Field label={t("account.postal")}>
+          <Input value={ship.deliveryPostal} onChange={(e) => setShip((s) => ({ ...s, deliveryPostal: e.target.value }))} />
+        </Field>
+        <Field label={t("account.city")}>
+          <Input value={ship.deliveryCity} onChange={(e) => setShip((s) => ({ ...s, deliveryCity: e.target.value }))} />
+        </Field>
+      </div>
+      <div className="mt-4 space-y-2">
+        {lines.map((line, i) => {
+          const product = known.get(line.sku.trim().toUpperCase());
+          return (
+            <div key={i} className="grid grid-cols-[1fr_6rem] gap-2">
+              <Input
+                placeholder={t("admin.behalfSku")}
+                value={line.sku}
+                onChange={(e) =>
+                  setLines((rows) => rows.map((r, idx) => (idx === i ? { ...r, sku: e.target.value } : r)))
+                }
+              />
+              <Input
+                placeholder={t("admin.behalfQty")}
+                inputMode="numeric"
+                value={line.qty}
+                onChange={(e) =>
+                  setLines((rows) => rows.map((r, idx) => (idx === i ? { ...r, qty: e.target.value } : r)))
+                }
+              />
+              {product ? (
+                <p className="col-span-2 text-xs text-muted">
+                  {product.nameFi} · {product.netPrice.toFixed(2)} € · saldo {product.stock}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          className="text-sm underline"
+          onClick={() => setLines((rows) => [...rows, { sku: "", qty: "1" }])}
+        >
+          {t("admin.behalfAdd")}
+        </button>
+      </div>
+      <Field label={t("checkout.notes")}>
+        <Textarea className="mt-2" value={notes} onChange={(e) => setNotes(e.target.value)} />
+      </Field>
+      <Button className="mt-4" disabled={busy} onClick={() => void send()}>
+        {busy ? t("common.loading") : t("admin.behalfSubmit")}
+      </Button>
+    </div>
+  );
+}
+
 function OrdersAdmin() {
   const { t } = useI18n();
   const qc = useQueryClient();
@@ -589,6 +768,7 @@ function OrdersAdmin() {
   const orders = q.data ?? [];
   return (
     <div>
+      <BehalfOrder />
       <p className="mb-4 text-sm text-muted">{t("orders.adminLead")}</p>
       <OrderList
         orders={orders}

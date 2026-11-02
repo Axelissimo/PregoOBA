@@ -81,6 +81,9 @@ export type Order = {
   vatTotal: number;
   grandTotal: number;
   createdAt: string;
+  onBehalf: boolean;
+  placedByName: string;
+  placedByEmail: string;
   items: OrderItem[];
 };
 

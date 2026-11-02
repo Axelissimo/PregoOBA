@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getSql, type Sql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { mapProductRow, guessGroup, featuresJson, GROUPS } from "@/lib/catalog-helpers";
-import { parseInventoryFile, splitCategory } from "@/lib/excel-parse";
+import { parseInventoryBytes, parseInventoryFile, splitCategory } from "@/lib/excel-parse";
 import type { Product } from "@/lib/types";
 import seed from "@/data/products.json";
 import datasheetFilenames from "@/data/datasheet-filenames.json";
@@ -228,12 +228,14 @@ async function ensureImportAudit(sql: Sql) {
 
 export const importInventory = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((input: { filename: string; text: string; deactivateMissing: boolean }) => input)
+  .validator((input: { filename: string; text?: string; base64?: string; deactivateMissing: boolean }) => input)
   .handler(async ({ context, data }) => {
     await requireAdmin(context.userId);
     await seedIfEmpty();
-    const rows = parseInventoryFile(data.text);
-    if (rows.length === 0) throw new Error("No product rows found in file");
+    const rows = data.base64
+      ? await parseInventoryBytes(Uint8Array.from(Buffer.from(data.base64, "base64")))
+      : parseInventoryFile(data.text || "");
+    if (rows.length === 0) throw new Error("Tiedostosta ei löytynyt tuoterivejä. Tallenna raportti .xls- tai .xlsx-muodossa.");
     const sql = await getSql();
     await ensureImportAudit(sql);
     const actor =
@@ -291,7 +293,7 @@ export const importInventory = createServerFn({ method: "POST" })
             ${r.sku}, ${r.ean}, ${name}, ${name}, ${name}, ${name}, ${name},
             ${cat.code}, ${cat.fi}, ${cat.fi}, ${cat.fi}, ${cat.fi}, ${cat.fi},
             ${group}, ${r.netPrice}, ${r.cartonQty}, ${r.stock}, ${r.incoming}, ${r.reserved}, ${r.backorder},
-            ${r.eta}, true, now(),
+            ${r.eta}, ${(r.stock > 0 || Boolean(r.eta))}, now(),
             ${sheetUrl}
           )
         `;
@@ -326,17 +328,17 @@ export const importInventory = createServerFn({ method: "POST" })
             reserved = ${r.reserved},
             backorder = ${r.backorder},
             eta = ${r.eta},
-            active = true,
+            active = ${(r.stock > 0 || Boolean(r.eta))},
             updated_at = now()
           where upper(sku) = ${r.sku}
         `;
       }
     }
     if (data.deactivateMissing && skus.length > 0) {
-      const keep = new Set(skus);
+      const keep = new Set(skus.map((s) => s.toUpperCase()));
       const all = await sql<{ sku: string; name_fi: string }>`select sku, name_fi from products where active = true`;
       for (const row of all) {
-        if (!keep.has(row.sku)) {
+        if (!keep.has(String(row.sku).toUpperCase())) {
           if (deactivatedDetails.length < 800) {
             deactivatedDetails.push({ sku: row.sku, name: row.name_fi || row.sku });
           }
@@ -357,6 +359,13 @@ export const importInventory = createServerFn({ method: "POST" })
         ${context.userId}, ${actor}, ${data.filename}, ${updated}, ${added},
         ${deactivatedDetails.length}, ${changedDetails.length}, ${data.deactivateMissing}, ${details}
       )
+    `;
+    await sql`
+      update products
+      set active = false, updated_at = now()
+      where active = true
+        and stock <= 0
+        and (eta is null or btrim(eta) = '')
     `;
     await restoreCatalogMedia(sql);
     return { updated, added, changed: changedDetails.length, deactivated: deactivatedDetails.length, total: rows.length };

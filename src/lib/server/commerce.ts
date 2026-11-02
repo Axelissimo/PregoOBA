@@ -173,11 +173,18 @@ type CheckoutInput = {
   deliveryPostal: string;
   deliveryCity: string;
   deliveryCountry: string;
+  onBehalfUserId?: string;
 };
 
 function num(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+async function ensureBehalfColumns(sql: Awaited<ReturnType<typeof getSql>>) {
+  await sql.query(`alter table orders add column if not exists on_behalf boolean not null default false`);
+  await sql.query(`alter table orders add column if not exists placed_by_name text not null default ''`);
+  await sql.query(`alter table orders add column if not exists placed_by_email text not null default ''`);
 }
 
 export const submitOrder = createServerFn({ method: "POST" })
@@ -186,16 +193,32 @@ export const submitOrder = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     if (!data.lines.length) throw new Error("Empty cart");
     const sql = await getSql();
-    const profileRows = await sql<Record<string, unknown>>`
+    const meRows = await sql<Record<string, unknown>>`
       select * from profiles where user_id = ${context.userId}
     `;
-    const profile = profileRows[0] ? mapProfile(profileRows[0]) : null;
-    if (!profile) throw new Error("Profile missing");
-    if (profile.role === "pending") throw new Error("Account pending approval");
+    const me = meRows[0] ? mapProfile(meRows[0]) : null;
+    if (!me) throw new Error("Profile missing");
+    let profile = me;
+    let onBehalf = false;
+    if (data.onBehalfUserId && data.onBehalfUserId !== context.userId) {
+      if (me.role !== "admin") throw new Error("Forbidden");
+      const targetRows = await sql<Record<string, unknown>>`
+        select * from profiles where user_id = ${data.onBehalfUserId} limit 1
+      `;
+      const target = targetRows[0] ? mapProfile(targetRows[0]) : null;
+      if (!target || target.role === "pending") throw new Error("Asiakasta ei voi tilata: tili ei ole hyväksytty");
+      profile = target;
+      onBehalf = true;
+    } else if (profile.role === "pending") {
+      throw new Error("Account pending approval");
+    }
+    await ensureBehalfColumns(sql);
 
     const items: { sku: string; qty: number; product: ReturnType<typeof mapProductRow>; preorder: boolean }[] = [];
     for (const line of data.lines) {
-      const rows = await sql<Record<string, unknown>>`select * from products where sku = ${line.sku} and active = true`;
+      const rows = await sql<Record<string, unknown>>`
+        select * from products where upper(sku) = ${line.sku.trim().toUpperCase()} and active = true
+      `;
       if (!rows[0]) throw new Error(`Unknown SKU ${line.sku}`);
       const product = mapProductRow(rows[0]);
       const qty = Math.max(1, Math.round(line.qty) || 1);
@@ -220,12 +243,14 @@ export const submitOrder = createServerFn({ method: "POST" })
       insert into orders (
         order_no, user_id, status, company_name, vat_number, email, phone, po_number, notes,
         delivery_name, delivery_address, delivery_postal, delivery_city, delivery_country,
-        reverse_charge, net_total, vat_rate, vat_total, grand_total
+        reverse_charge, net_total, vat_rate, vat_total, grand_total,
+        on_behalf, placed_by_name, placed_by_email
       ) values (
-        ${orderNo}, ${context.userId}, 'submitted', ${profile.companyName}, ${profile.vatNumber},
+        ${orderNo}, ${profile.userId}, 'submitted', ${profile.companyName}, ${profile.vatNumber},
         ${profile.email}, ${profile.phone}, ${data.poNumber}, ${data.notes},
         ${data.deliveryName}, ${data.deliveryAddress}, ${data.deliveryPostal}, ${data.deliveryCity},
-        ${data.deliveryCountry}, ${data.reverseCharge}, ${netTotal}, ${vatRate}, ${vatTotal}, ${grand}
+        ${data.deliveryCountry}, ${data.reverseCharge}, ${netTotal}, ${vatRate}, ${vatTotal}, ${grand},
+        ${onBehalf}, ${onBehalf ? me.displayName || me.email : ""}, ${onBehalf ? me.email : ""}
       ) returning id
     `;
     const orderId = inserted[0].id;
@@ -239,8 +264,12 @@ export const submitOrder = createServerFn({ method: "POST" })
     }
 
     const to = orderEmailRows[0]?.value || "barmanol@gmail.com";
+    const behalfLine = onBehalf
+      ? `TILATTU YLLÄPIDON TOIMESTA asiakkaan puolesta. Tekijä: ${me.displayName || me.email} <${me.email}>`
+      : "";
     const body = [
       `Tilaus ${orderNo}`,
+      behalfLine,
       `Yritys: ${profile.companyName} (${profile.vatNumber})`,
       `Yhteys: ${profile.displayName} <${profile.email}> ${profile.phone}`,
       `Ostotilaus: ${data.poNumber || "—"}`,
@@ -274,7 +303,7 @@ export const submitOrder = createServerFn({ method: "POST" })
     const sent = await sendOrderEmail({
       to,
       cc: profile.email,
-      subject: `Prego B2B tilaus ${orderNo}`,
+      subject: onBehalf ? `Prego B2B tilaus ${orderNo} (ylläpito asiakkaan puolesta)` : `Prego B2B tilaus ${orderNo}`,
       text: body,
       pdf,
     });
@@ -392,6 +421,9 @@ function mapOrder(row: Record<string, unknown>, items: Record<string, unknown>[]
     vatTotal: num(row.vat_total),
     grandTotal: num(row.grand_total),
     createdAt: String(row.created_at ?? ""),
+    onBehalf: Boolean(row.on_behalf),
+    placedByName: String(row.placed_by_name ?? ""),
+    placedByEmail: String(row.placed_by_email ?? ""),
     items: items.map(
       (i): OrderItem => ({
         id: num(i.id),

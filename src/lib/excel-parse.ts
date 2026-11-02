@@ -27,15 +27,26 @@ function decodeEntities(s: string): string {
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 }
 
-function cellText(fragment: string): string[] {
-  const out: string[] = [];
-  const re = /<(?:ss:)?Data\b[^>]*>([\s\S]*?)<\/(?:ss:)?Data>/gi;
+function cellsOfRow(fragment: string): string[] {
+  const cells: string[] = [];
+  const re = /<Cell\b([^>]*)>([\s\S]*?)<\/Cell>/gi;
   let m: RegExpExecArray | null;
+  let col = 0;
   while ((m = re.exec(fragment))) {
-    const raw = m[1].replace(/<[^>]+>/g, "").trim();
-    out.push(decodeEntities(raw));
+    const idx = /ss:Index="(\d+)"/i.exec(m[1]);
+    if (idx) {
+      const want = Number(idx[1]) - 1;
+      while (col < want) {
+        cells.push("");
+        col += 1;
+      }
+    }
+    const data = /<(?:ss:)?Data\b[^>]*>([\s\S]*?)<\/(?:ss:)?Data>/i.exec(m[2]);
+    const raw = data ? decodeEntities(data[1].replace(/<[^>]+>/g, "").trim()) : "";
+    cells.push(raw);
+    col += 1;
   }
-  return out;
+  return cells;
 }
 
 function num(v: string | undefined, fallback = 0): number {
@@ -49,7 +60,7 @@ function parseXml(text: string): ImportedRow[] {
   const rows: ImportedRow[] = [];
   const seen = new Set<string>();
   for (const chunk of chunks) {
-    const cells = cellText(chunk);
+    const cells = cellsOfRow(chunk);
     if (cells.length < 8) continue;
     const sku = normalizeSku(cells[0] || "");
     if (!SKU_RE.test(sku) && !/^[A-Z]{1,4}\d/i.test(sku)) continue;
@@ -141,6 +152,73 @@ export function parseInventoryFile(text: string): ImportedRow[] {
     return parseXml(text);
   }
   return parseCsv(text);
+}
+
+function etaText(value: unknown): string | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const d = String(value.getDate()).padStart(2, "0");
+    const m = String(value.getMonth() + 1).padStart(2, "0");
+    return `${d}.${m}.${value.getFullYear()}`;
+  }
+  const s = String(value ?? "").trim();
+  if (!s || s === "0") return null;
+  return s;
+}
+
+function rowsFromMatrix(matrix: unknown[][]): ImportedRow[] {
+  const asText = matrix.map((row) => (row || []).map((cell) => (cell instanceof Date ? etaText(cell) || "" : String(cell ?? "").trim())));
+  let headerAt = -1;
+  for (let i = 0; i < Math.min(asText.length, 40); i++) {
+    const line = asText[i].join(" | ").toLowerCase();
+    if (line.includes("vapaasaldo") || (line.includes("tuote") && (line.includes("hinta") || line.includes("saldo")))) {
+      headerAt = i;
+      break;
+    }
+  }
+  if (headerAt >= 0) {
+    const header = asText[headerAt].map((h) => h.toLowerCase());
+    const fake = [header.join(";"), ...asText.slice(headerAt + 1).map((r) => r.map((c) => `"${c.replaceAll('"', "")}"`).join(";"))];
+    return parseCsv(fake.join("\n"));
+  }
+  const rows: ImportedRow[] = [];
+  const seen = new Set<string>();
+  for (const cells of asText) {
+    const sku = normalizeSku(cells[0] || "");
+    if (!SKU_RE.test(sku) && !/^[A-Z]{1,4}\d/i.test(sku)) continue;
+    if (seen.has(sku)) continue;
+    seen.add(sku);
+    rows.push({
+      sku,
+      nameFi: (cells[1] || "").trim(),
+      eta: etaText(cells[2]),
+      ean: (cells[3] || "").trim(),
+      categoryRaw: (cells[4] || "").trim(),
+      netPrice: num(cells[5]),
+      cartonQty: Math.max(1, Math.round(num(cells[6], 1))),
+      stock: Math.round(num(cells[7])),
+      incoming: Math.round(num(cells[8])),
+      reserved: Math.round(num(cells[9])),
+      backorder: Math.round(num(cells[10])),
+    });
+  }
+  return rows;
+}
+
+export async function parseInventoryBytes(bytes: Uint8Array): Promise<ImportedRow[]> {
+  const zip = bytes[0] === 0x50 && bytes[1] === 0x4b;
+  const ole = bytes[0] === 0xd0 && bytes[1] === 0xcf;
+  if (zip || ole) {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.read(bytes, { type: "array", cellDates: true });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" }) as unknown[][];
+    const rows = rowsFromMatrix(matrix);
+    if (rows.length) return rows;
+  }
+  const latin = new TextDecoder("iso-8859-15").decode(bytes);
+  const utf = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  const xml = latin.includes("<Workbook") || latin.includes("ss:Workbook") ? latin : utf;
+  return parseInventoryFile(xml);
 }
 
 export function splitCategory(raw: string): { code: string; fi: string } {

@@ -132,7 +132,17 @@ export async function buildOrderPdf(o: Order): Promise<Uint8Array> {
   text(date, right - regular.widthOfTextAtSize(date, 10), y + 4, 10, regular, MUTED);
   y -= 10;
   page.drawRectangle({ x: left, y, width: right - left, height: 2, color: ACCENT });
-  y -= 28;
+  y -= 16;
+  if (o.onBehalf) {
+    const who = [o.placedByName, o.placedByEmail].filter(Boolean).join(" · ");
+    text("TILATTU YLLAPIDON TOIMESTA ASIAKKAAN PUOLESTA", left, y, 9, bold, ACCENT);
+    y -= 13;
+    if (who) {
+      text(who, left, y, 9, regular);
+      y -= 14;
+    }
+  }
+  y -= 12;
 
   const colW = (right - left - 24) / 2;
   text("Tilaaja", left, y, 8, bold, MUTED);
